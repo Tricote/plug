@@ -92,6 +92,18 @@ defmodule Plug.ParsersTest do
     assert conn.query_params["foo"] == "bar"
   end
 
+  test "parse bodies according to the methods option" do
+    conn =
+      conn(:get, "/?foo=bar", "body=baz")
+      |> put_req_header("content-type", "application/x-www-form-urlencoded")
+      |> parse(body_methods: ~w(POST PUT PATCH DELETE GET))
+
+    assert conn.params["foo"] == "bar"
+    assert conn.params["body"] == "baz"
+    assert conn.body_params["body"] == "baz"
+    assert conn.query_params["foo"] == "bar"
+  end
+
   test "error on invalid utf-8 in query params when merging params" do
     conn = conn(:post, "/?foo=#{<<139>>}")
 

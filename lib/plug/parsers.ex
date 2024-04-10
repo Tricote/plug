@@ -68,7 +68,8 @@ defmodule Plug.Parsers do
   Parsers may raise a `Plug.Parsers.ParseError` if the request has a malformed
   body.
 
-  This plug only parses the body if the request method is one of the following:
+  By default, this plug only parses the body if the request method is one of the
+  following:
 
     * `POST`
     * `PUT`
@@ -76,7 +77,8 @@ defmodule Plug.Parsers do
     * `DELETE`
 
   For requests with a different request method, this plug will only fetch the
-  query params.
+  query params. This list can be customized by passing the `:methods` option to the
+  Plug.
 
   ## Options
 
@@ -104,6 +106,9 @@ defmodule Plug.Parsers do
       `{Plug.Conn, :read_body, []}`. Note that this option is not used by
       `Plug.Parsers.MULTIPART` which relies instead on other functions defined
       in `Plug.Conn`.
+
+    * `:body_methods` - a list of request methods for which the parsers will parse
+      the request body. Defaults to `["POST", "PUT", "PATCH", "DELETE"]`
 
   All other options given to this Plug are forwarded to the parsers.
 
@@ -246,20 +251,21 @@ defmodule Plug.Parsers do
               | {:next, Conn.t()}
 
   @behaviour Plug
-  @methods ~w(POST PUT PATCH DELETE)
+  @default_body_methods ~w(POST PUT PATCH DELETE)
 
   @impl true
   def init(opts) do
     {parsers, opts} = Keyword.pop(opts, :parsers)
     {pass, opts} = Keyword.pop(opts, :pass, [])
     {query_string_length, opts} = Keyword.pop(opts, :query_string_length, 1_000_000)
+    {body_methods, opts} = Keyword.pop(opts, :body_methods, @default_body_methods)
     validate_utf8 = Keyword.get(opts, :validate_utf8, true)
 
     unless parsers do
       raise ArgumentError, "Plug.Parsers expects a set of parsers to be given in :parsers"
     end
 
-    {convert_parsers(parsers, opts), pass, query_string_length, validate_utf8}
+    {convert_parsers(parsers, opts), pass, query_string_length, validate_utf8, body_methods}
   end
 
   defp convert_parsers(parsers, root_opts) do
@@ -284,9 +290,23 @@ defmodule Plug.Parsers do
   end
 
   @impl true
-  def call(%{method: method, body_params: %Plug.Conn.Unfetched{}} = conn, options)
-      when method in @methods do
-    {parsers, pass, query_string_length, validate_utf8} = options
+  def call(%{body_params: %Plug.Conn.Unfetched{}} = conn, options) do
+    {parsers, pass, query_string_length, validate_utf8, body_methods} = options
+    %{method: method} = conn
+
+    if Enum.member?(body_methods, method) do
+      parse_with_body(conn, parsers, pass, query_string_length, validate_utf8)
+    else
+      parse_without_body(conn, query_string_length, validate_utf8)
+    end
+  end
+
+  def call(conn, options) do
+    {_, _, query_string_length, validate_utf8, _} = options
+    parse_without_body(conn, query_string_length, validate_utf8)
+  end
+
+  defp parse_with_body(conn, parsers, pass, query_string_length, validate_utf8) do
     %{req_headers: req_headers} = conn
 
     conn =
@@ -321,7 +341,11 @@ defmodule Plug.Parsers do
     end
   end
 
-  def call(%{body_params: body_params} = conn, {_, _, query_string_length, validate_utf8}) do
+  defp parse_without_body(
+         %{body_params: body_params} = conn,
+         query_string_length,
+         validate_utf8
+       ) do
     body_params = make_empty_if_unfetched(body_params)
     {conn, params} = merge_params(conn, body_params, query_string_length, validate_utf8)
     %{conn | params: params, body_params: body_params}
@@ -338,9 +362,9 @@ defmodule Plug.Parsers do
          validate_utf8
        ) do
     case parser.parse(conn, type, subtype, params, options) do
-      {:ok, body, conn} ->
-        {conn, params} = merge_params(conn, body, query_string_length, validate_utf8)
-        %{conn | params: params, body_params: body}
+      {:ok, body_params, conn} ->
+        {conn, params} = merge_params(conn, body_params, query_string_length, validate_utf8)
+        %{conn | params: params, body_params: body_params}
 
       {:next, conn} ->
         reduce(conn, rest, type, subtype, params, pass, query_string_length, validate_utf8)
